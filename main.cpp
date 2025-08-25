@@ -168,38 +168,39 @@ T norm2(const Kokkos::View<T*> &r) {
     return sqrt(dot(r, r));
 }
 
-std::pair<int, float> cg(const Vec<float>& x, const ELL<float> A, const Vec<float>& b, float tol) {
+template <typename Scalar>
+std::pair<int, Scalar> cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scalar tol) {
 
     Handle handle;
 
-    Vec<float> Ax0("Ax0", A.rows);
-    Vec<float> r_k("r", A.rows);
+    Vec<Scalar> Ax0("Ax0", A.rows);
+    Vec<Scalar> r_k("r", A.rows);
 
     // r0 = b - A x0
     spmv(handle, Ax0, A, x);
-    axpby(r_k, float{-1}, Ax0, float{1}, b);
+    axpby(r_k, Scalar{-1}, Ax0, Scalar{1}, b);
 
-    float r = norm2(r_k);
+    Scalar r = norm2(r_k);
     std::cerr << __FILE__ << ":" << __LINE__ << " r=" << r << "\n";
     if (r < tol) {
         return std::make_pair(0, r);
     }
 
-    Vec<float> p_k("p_k", A.rows);
+    Vec<Scalar> p_k("p_k", A.rows);
     Kokkos::deep_copy(p_k, r_k); // p0 <- r0
 
-    Vec<float> x_k = x;
-    Vec<float> Ap_k("Ap_k", A.rows);
-    Vec<float> r_k1("r_k1", A.rows);
+    Vec<Scalar> x_k = x;
+    Vec<Scalar> Ap_k("Ap_k", A.rows);
+    Vec<Scalar> r_k1("r_k1", A.rows);
     int k = 1;
     for (k = 1; k <= 1000; ++k) {
         // std::cerr << __FILE__ << ":" << __LINE__ << " k=" << k << "\n";
 
         spmv(handle, Ap_k, A, p_k);
-        float alpha_k = dot(r_k,r_k) / dot(p_k, Ap_k);
+        Scalar alpha_k = dot(r_k,r_k) / dot(p_k, Ap_k);
         // std::cerr << __FILE__ << ":" << __LINE__ << " alpha_k=" << alpha_k << "\n";
         
-        axpby(r_k1, float{1}, r_k, -alpha_k, Ap_k);
+        axpby(r_k1, Scalar{1}, r_k, -alpha_k, Ap_k);
 
         r = norm2(r_k1);
         std::cerr << __FILE__ << ":" << __LINE__ << " r=" << r << "\n";
@@ -207,12 +208,12 @@ std::pair<int, float> cg(const Vec<float>& x, const ELL<float> A, const Vec<floa
             return std::make_pair(k, r);
         }
 
-        float beta_k = dot(r_k1, r_k1) / dot(r_k, r_k);
+        Scalar beta_k = dot(r_k1, r_k1) / dot(r_k, r_k);
         // std::cerr << __FILE__ << ":" << __LINE__ << " beta_k=" << beta_k << "\n";
-        axpby(p_k, float{1}, r_k1, beta_k, p_k);
+        axpby(p_k, Scalar{1}, r_k1, beta_k, p_k);
 
 
-        axpby(x_k, float{1}, x_k, alpha_k, p_k);
+        axpby(x_k, Scalar{1}, x_k, alpha_k, p_k);
         std::swap(r_k1, r_k);
     }
 
