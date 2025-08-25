@@ -33,7 +33,18 @@ struct Handle {
     }
 };
 
-
+template <typename T>
+constexpr cudaDataType_t make_cuda_data_type() {
+    if constexpr (std::is_same_v<T, float>) {
+        return CUDA_R_32F;
+    } else if constexpr (std::is_same_v<T, Kokkos::Experimental::half_t>) {
+        return CUDA_R_16F;
+    } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+        return CUDA_R_16BF;
+    } else {
+        static_assert(std::is_void_v<T> && ! std::is_void_v<T>, "unexpected type");
+    }
+}
 
 void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
 
@@ -46,16 +57,16 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
         cusparseSetStream(h.h, Kokkos::DefaultExecutionSpace{}.cuda_stream());
 
         // create Y
-        cusparseCreateDnVec(&h.y, y.extent(0), y.data(), CUDA_R_32F);
+        cusparseCreateDnVec(&h.y, y.extent(0), y.data(), make_cuda_data_type<float>());
 
         // create X
-        cusparseCreateDnVec(&h.x, x.extent(0), x.data(), CUDA_R_32F);
+        cusparseCreateDnVec(&h.x, x.extent(0), x.data(), make_cuda_data_type<float>());
 
         // create A
         cusparseIndexType_t sellSliceOffsetsType = CUSPARSE_INDEX_32I;
         cusparseIndexType_t sellColIndType = CUSPARSE_INDEX_32I;
         cusparseIndexBase_t idxBase = CUSPARSE_INDEX_BASE_ZERO;
-        cudaDataType valueType = CUDA_R_32F;
+        cudaDataType valueType = make_cuda_data_type<float>();
         cusparseStatus_t status = cusparseCreateConstSlicedEll(&h.A, A.rows, A.cols, A.nnz,
                              A.sellValuesSize,
                              A.sliceSize,
@@ -79,7 +90,7 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
                                 h.x,
                                 &beta,
                                 h.y,
-                                CUDA_R_32F,
+                                make_cuda_data_type<float>(),
                                 CUSPARSE_SPMV_SELL_ALG1,
                                 &bufferSize);
         if (status != CUSPARSE_STATUS_SUCCESS) {
@@ -105,7 +116,7 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
              h.x,  // non-const descriptor supported
              &beta,
              h.y,
-             CUDA_R_32F,
+             make_cuda_data_type<float>(),
              CUSPARSE_SPMV_SELL_ALG1,
              h.externalBuffer);
     if (status != CUSPARSE_STATUS_SUCCESS) {
@@ -188,11 +199,8 @@ std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
 }
 
 // cg solve on a region of nx x ny x nz
-void seven_point(int64_t nx, int64_t ny, int64_t nz) {
-
-    std::mt19937 gen(31337); // an elite choice
-    std::uniform_real_distribution<float> dist(0.5, 1.0);
-
+template <typename Scalar>
+void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     /*
     for nx x ny x nz gridpoints, the matrix will be (nx*ny*nz) x (nx*ny*nz) with 7 nz in most rows
 
@@ -236,7 +244,7 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz) {
     std::cerr << __FILE__ << ":" << __LINE__ << " nnz=" << nnz << "\n";
 
     std::cerr << __FILE__ << ":" << __LINE__ << " create SELL device views\n";
-    Kokkos::View<float*> sellValues("sellValues", sellValuesSize);
+    Vec sellValues("sellValues", sellValuesSize);
     Kokkos::View<int32_t*> sellColInd("sellColInd", sellValuesSize);
     Kokkos::View<int32_t*> sellSliceOffsets("sellSliceOffsets", 1+1); // 1 slice
 
@@ -310,6 +318,8 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz) {
 
     std::cerr << __FILE__ << ":" << __LINE__ << " fill b_h\n"; 
 
+    std::mt19937 gen(31337); // an elite choice
+    std::uniform_real_distribution<float> dist(0.5, 1.0);
     for (size_t i = 0; i < b_h.extent(0); ++i) {
         b_h(i) = dist(gen);
     }
@@ -322,7 +332,7 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz) {
     };
 
     std::cerr << __FILE__ << ":" << __LINE__ << " cg\n"; 
-    const auto p = cg(b, A, x, 1e-7);
+    const auto p = cg(b, A, x, tol);
 
     std::cerr << __FILE__ << ":" << __LINE__ << " cg terminated with k=" << p.first << " r=" << p.second << "\n";
 }
@@ -339,7 +349,7 @@ int main(int argc, char** argv) {
     }
 
     Kokkos::initialize(); {
-        seven_point(N,N,N);
+        seven_point<float>(N,N,N, 1e-7);
     } Kokkos::finalize();
 
     return 0;
