@@ -343,7 +343,7 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " fill b_h\n"; 
 
     std::mt19937 gen(31337); // an elite choice
-    std::uniform_real_distribution<float> dist(0.5, 1.0);
+    std::uniform_real_distribution<double> dist(0.5, 1.0);
     for (size_t i = 0; i < b_h.extent(0); ++i) {
         b_h(i) = Scalar(dist(gen));
     }
