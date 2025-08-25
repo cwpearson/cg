@@ -39,7 +39,9 @@ template <typename T>
 constexpr cudaDataType_t make_cuda_data_type() {
     if constexpr (std::is_same_v<T, float>) {
         return CUDA_R_32F;
-    } else if constexpr (std::is_same_v<T, Kokkos::Experimental::half_t>) {
+    } else if constexpr (std::is_same_v<T, double>) {
+        return CUDA_R_64F;
+    }else if constexpr (std::is_same_v<T, Kokkos::Experimental::half_t>) {
         return CUDA_R_16F;
     } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
         return CUDA_R_16BF;
@@ -181,7 +183,7 @@ std::pair<int, Scalar> cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<S
     axpby(r_k, Scalar{-1}, Ax0, Scalar{1}, b);
 
     Scalar r = norm2(r_k);
-    std::cerr << __FILE__ << ":" << __LINE__ << " r=" << r << "\n";
+    std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
     if (r < tol) {
         return std::make_pair(0, r);
     }
@@ -203,7 +205,7 @@ std::pair<int, Scalar> cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<S
         axpby(r_k1, Scalar{1}, r_k, -alpha_k, Ap_k);
 
         r = norm2(r_k1);
-        std::cerr << __FILE__ << ":" << __LINE__ << " r=" << r << "\n";
+        std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
         if (r < tol) {
             return std::make_pair(k, r);
         }
@@ -266,7 +268,7 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " nnz=" << nnz << "\n";
 
     std::cerr << __FILE__ << ":" << __LINE__ << " create SELL device views\n";
-    Vec<float> sellValues("sellValues", sellValuesSize);
+    Vec<Scalar> sellValues("sellValues", sellValuesSize);
     Vec<int32_t> sellColInd("sellColInd", sellValuesSize);
     Vec<int32_t> sellSliceOffsets("sellSliceOffsets", 1+1); // 1 slice
 
@@ -332,8 +334,8 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " sellSliceOffsets <- sellSliceOffsets_h\n"; 
     Kokkos::deep_copy(sellSliceOffsets, sellSliceOffsets_h);
 
-    Vec<float> b("b", cols);
-    Vec<float> x("x", rows);
+    Vec<Scalar> b("b", cols);
+    Vec<Scalar> x("x", rows);
 
     std::cerr << __FILE__ << ":" << __LINE__ << " b_h = create_mirror_view(b)\n"; 
     auto b_h = Kokkos::create_mirror_view(b);
@@ -343,20 +345,20 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::mt19937 gen(31337); // an elite choice
     std::uniform_real_distribution<float> dist(0.5, 1.0);
     for (size_t i = 0; i < b_h.extent(0); ++i) {
-        b_h(i) = dist(gen);
+        b_h(i) = Scalar(dist(gen));
     }
 
     std::cerr << __FILE__ << ":" << __LINE__ << " b <- b_h\n"; 
     Kokkos::deep_copy(b, b_h);
 
-    ELL<float> A{
+    ELL<Scalar> A{
         rows, cols, nnz, sellValuesSize, sliceSize, sellSliceOffsets, sellColInd, sellValues
     };
 
     std::cerr << __FILE__ << ":" << __LINE__ << " cg\n"; 
     const auto p = cg(b, A, x, tol);
 
-    std::cerr << __FILE__ << ":" << __LINE__ << " cg terminated with k=" << p.first << " r=" << p.second << "\n";
+    std::cerr << __FILE__ << ":" << __LINE__ << " cg terminated with k=" << p.first << " r=" << double(p.second) << "\n";
 }
 
 
@@ -365,14 +367,26 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
 
 int main(int argc, char** argv) {
 
+    std::string_view dt{"f32"};
     int N = 10;
     if (argc >= 2) {
         N = std::atoi(argv[1]);
     }
 
+    int err = 0;
     Kokkos::initialize(); {
-        seven_point<float>(N,N,N, 1e-7);
+        if (dt == "f32") {
+            seven_point<float>(N,N,N, 1e-7);
+        } else if (dt == "f64") {
+            seven_point<double>(N,N,N, 1e-13);
+        } else if (dt == "bf16") {
+            seven_point<__nv_bfloat16>(N,N,N, 1e-3);
+        } else {
+            std::cerr << "unexpected data type " << dt << "\n";
+            err = 1;
+        }
+        
     } Kokkos::finalize();
 
-    return 0;
+    return err;
 }
