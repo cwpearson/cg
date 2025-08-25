@@ -134,10 +134,11 @@ void axpby(Vec &z, float alpha, const Vec &x, float beta, const Vec &y) {
         });
 }
 
-float dot(const Vec &x, const Vec &y) {
-    float result = 0.0;
+template <typename Scalar>
+Scalar dot(const Kokkos::View<Scalar*> &x, const Kokkos::View<Scalar*> &y) {
+    Scalar result = 0.0;
     Kokkos::parallel_reduce("dot", x.extent(0), 
-        KOKKOS_LAMBDA(const int i, float& lsum) {
+        KOKKOS_LAMBDA(const int i, Scalar& lsum) {
             lsum += x(i) * y(i);
         }, result);
     return result;
