@@ -127,7 +127,8 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
 
 
 
-void axpby(Vec &z, float alpha, const Vec &x, float beta, const Vec &y) {
+template <typename Scalar>
+void axpby(const Kokkos::View<Scalar*> &z, Scalar alpha, const Kokkos::View<Scalar*> &x, Scalar beta, const Kokkos::View<Scalar*> &y) {
     Kokkos::parallel_for("axpby", z.extent(0), 
         KOKKOS_LAMBDA(const int i) {
             z(i) = alpha * x(i) + beta * y(i);
@@ -173,7 +174,7 @@ std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
 
     // r0 = b - A x0
     spmv(handle, Ax0, A, x);
-    axpby(r_k, -1, Ax0, 1, b);
+    axpby(r_k, float{-1}, Ax0, float{1}, b);
 
     float r = norm2(r_k);
     std::cerr << __FILE__ << ":" << __LINE__ << " r=" << r << "\n";
@@ -195,7 +196,7 @@ std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
         float alpha_k = dot(r_k,r_k) / dot(p_k, Ap_k);
         // std::cerr << __FILE__ << ":" << __LINE__ << " alpha_k=" << alpha_k << "\n";
         
-        axpby(r_k1, 1, r_k, -alpha_k, Ap_k);
+        axpby(r_k1, float{1}, r_k, -alpha_k, Ap_k);
 
         r = norm2(r_k1);
         std::cerr << __FILE__ << ":" << __LINE__ << " r=" << r << "\n";
@@ -205,10 +206,10 @@ std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
 
         float beta_k = dot(r_k1, r_k1) / dot(r_k, r_k);
         // std::cerr << __FILE__ << ":" << __LINE__ << " beta_k=" << beta_k << "\n";
-        axpby(p_k, 1, r_k1, beta_k, p_k);
+        axpby(p_k, float{1}, r_k1, beta_k, p_k);
 
 
-        axpby(x_k, 1, x_k, alpha_k, p_k);
+        axpby(x_k, float{1}, x_k, alpha_k, p_k);
         std::swap(r_k1, r_k);
     }
 
