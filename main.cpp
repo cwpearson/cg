@@ -187,49 +187,49 @@ std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
     return std::make_pair(k-1, r);
 }
 
-// cg solve on a region of N x N x N
-void seven_point(int64_t N) {
+// cg solve on a region of nx x ny x nz
+void seven_point(int64_t nx, int64_t ny, int64_t nz) {
 
     std::mt19937 gen(31337); // an elite choice
     std::uniform_real_distribution<float> dist(0.5, 1.0);
 
     /*
-    for N x N x N gridpoints, the matrix will be 7N^3 x 7N^3 with 7 nz in most rows
-    
+    for nx x ny x nz gridpoints, the matrix will be (nx*ny*nz) x (nx*ny*nz) with 7 nz in most rows
+
     neighbors of point i:
     i (self)
     i - 1
     i + 1
-    i - N
-    i + N
-    i - N^2
-    i + N^2
-    
+    i - nx
+    i + nx
+    i - nx*ny
+    i + nx*ny
+
     */
 
-    int64_t rows = N * N * N;
-    int64_t cols = N * N * N;
+    int64_t rows = nx * ny * nz;
+    int64_t cols = nx * ny * nz;
     std::cerr << __FILE__ << ":" << __LINE__ << " matrix " << rows << " x " << cols << "\n";
 
 
     // basically every row has 7 nnz, so let's just make the whole matrix one slice
-    int64_t sliceSize = N * N * N;
-    int64_t sellValuesSize = 7*N*N*N;
+    int64_t sliceSize = nx * ny * nz;
+    int64_t sellValuesSize = 7 * nx * ny * nz;
     std::cerr << __FILE__ << ":" << __LINE__ << " SELL values =" << sellValuesSize << "\n";
 
     // actual number of zeros
     std::cerr << __FILE__ << ":" << __LINE__ << " count nnz\n";
     int64_t nnz = 0;
-    for (int64_t x = 0; x < N; ++x) {
-        for (int64_t y = 0; y < N; ++y) {
-            for (int64_t z = 0; z < N; ++z) {
+    for (int64_t x = 0; x < nx; ++x) {
+        for (int64_t y = 0; y < ny; ++y) {
+            for (int64_t z = 0; z < nz; ++z) {
                 nnz += 1; // self
                 nnz += ((x-1) >= 0);
-                nnz += ((x+1) <  N);
+                nnz += ((x+1) <  nx);
                 nnz += ((y-1) >= 0);
-                nnz += ((y+1) <  N);
+                nnz += ((y+1) <  ny);
                 nnz += ((z-1) >= 0);
-                nnz += ((z+1) <  N);
+                nnz += ((z+1) <  nz);
             }
         }
     }
@@ -251,26 +251,26 @@ void seven_point(int64_t N) {
     for (int64_t i = 0; i < sellValuesSize; ++i) {
 
         // row of the 2D matrix this value is in
-        int64_t row = i % (N * N * N);
-        
-        int64_t x = row % N;
-        int64_t y = (row / N) % N;
-        int64_t z = row / N / N;
-        
+        int64_t row = i % (nx * ny * nz);
+
+        int64_t x = row % nx;
+        int64_t y = (row / nx) % ny;
+        int64_t z = row / (nx * ny);
+
         // row entry of the 2D matrix this value represents
-        int64_t col_i = i / (N * N * N);
-        
+        int64_t col_i = i / (nx * ny * nz);
+
         // the neighbor this column index refers to depends on which column index it is
         // check if the neighbor is inside the 3D grid, and if so, set a value
         // otherwise, set a null column
         switch(col_i) {
-            case 3:                  sellValues_h(i) =  6; sellColInd_h(i) = row;                                                       break;
-            case 0: if (z - 1 >= 0) {sellValues_h(i) = -1; sellColInd_h(i) = row - N * N;} else {sellColInd_h(i) = -1;} break;
-            case 1: if (y - 1 >= 0) {sellValues_h(i) = -1; sellColInd_h(i) = row - N    ;} else {sellColInd_h(i) = -1;} break;
-            case 2: if (x - 1 >= 0) {sellValues_h(i) = -1; sellColInd_h(i) = row - 1    ;} else {sellColInd_h(i) = -1;} break;
-            case 4: if (x + 1  < N) {sellValues_h(i) = -1; sellColInd_h(i) = row + 1    ;} else {sellColInd_h(i) = -1;} break;
-            case 5: if (y + 1  < N) {sellValues_h(i) = -1; sellColInd_h(i) = row + N    ;} else {sellColInd_h(i) = -1;} break;
-            case 6: if (z + 1  < N) {sellValues_h(i) = -1; sellColInd_h(i) = row + N * N;} else {sellColInd_h(i) = -1;} break;
+            case 3:                   sellValues_h(i) =  6; sellColInd_h(i) = row;                                                              break;
+            case 0: if (z - 1 >= 0)  {sellValues_h(i) = -1; sellColInd_h(i) = row - nx * ny;} else {sellColInd_h(i) = -1;} break;
+            case 1: if (y - 1 >= 0)  {sellValues_h(i) = -1; sellColInd_h(i) = row - nx     ;} else {sellColInd_h(i) = -1;} break;
+            case 2: if (x - 1 >= 0)  {sellValues_h(i) = -1; sellColInd_h(i) = row - 1      ;} else {sellColInd_h(i) = -1;} break;
+            case 4: if (x + 1  < nx) {sellValues_h(i) = -1; sellColInd_h(i) = row + 1      ;} else {sellColInd_h(i) = -1;} break;
+            case 5: if (y + 1  < ny) {sellValues_h(i) = -1; sellColInd_h(i) = row + nx     ;} else {sellColInd_h(i) = -1;} break;
+            case 6: if (z + 1  < nz) {sellValues_h(i) = -1; sellColInd_h(i) = row + nx * ny;} else {sellColInd_h(i) = -1;} break;
             default: ;
         }
 
@@ -325,8 +325,8 @@ void seven_point(int64_t N) {
     const auto p = cg(b, A, x, 1e-7);
 
     std::cerr << __FILE__ << ":" << __LINE__ << " cg terminated with k=" << p.first << " r=" << p.second << "\n";
-
 }
+
 
 
 
@@ -339,7 +339,7 @@ int main(int argc, char** argv) {
     }
 
     Kokkos::initialize(); {
-        seven_point(N);
+        seven_point(N,N,N);
     } Kokkos::finalize();
 
     return 0;
