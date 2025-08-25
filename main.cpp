@@ -368,19 +368,30 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
 int main(int argc, char** argv) {
 
     std::string_view dt{"f32"};
-    int N = 10;
-    if (argc >= 2) {
-        N = std::atoi(argv[1]);
+    int nx = 10;
+    int ny = 10;
+    int nz = 10;
+    if (argc >= 5) {
+        nx = std::atoi(argv[1]);
+        nx = std::atoi(argv[2]);
+        nx = std::atoi(argv[3]);
+        dt = argv[4];
+    } else if (argc >= 4) {
+        nx = std::atoi(argv[1]);
+        nx = std::atoi(argv[2]);
+        nx = std::atoi(argv[3]);
+    } else if (argc >= 2) {
+        nx = ny = nz = std::atoi(argv[1]);
     }
 
     int err = 0;
     Kokkos::initialize(); {
         if (dt == "f32") {
-            seven_point<float>(N,N,N, 1e-7);
+            seven_point<float>(nx,ny,nz, 1e-7);
         } else if (dt == "f64") {
-            seven_point<double>(N,N,N, 1e-13);
+            seven_point<double>(nx,ny,nz, 1e-13);
         } else if (dt == "bf16") {
-            seven_point<__nv_bfloat16>(N,N,N, 1e-3);
+            seven_point<__nv_bfloat16>(nx,ny,nz, 1e-3);
         } else {
             std::cerr << "unexpected data type " << dt << "\n";
             err = 1;
