@@ -1,9 +1,14 @@
+#include <chrono>
 #include <iostream>
 #include <random>
 
 #include <Kokkos_Core.hpp>
 
 #include <cusparse_v2.h>
+
+using Clock = std::chrono::steady_clock;
+using Dur = std::chrono::duration<double>;
+
 
 template <typename Scalar>
 using Vec = Kokkos::View<Scalar *>;
@@ -50,6 +55,15 @@ constexpr cudaDataType_t make_cuda_data_type() {
     }
 }
 
+template <typename T>
+constexpr cudaDataType_t make_cuda_compute_type() {
+    if constexpr (std::is_same_v<T, double>) {
+        return CUDA_R_64F;
+    } else {
+        return CUDA_R_32F;
+    }
+}
+
 template <typename Scalar>
 void spmv(Handle &h, const Vec<Scalar> &y, const ELL<Scalar> &A, const Vec<Scalar> &x) {
 
@@ -58,9 +72,6 @@ void spmv(Handle &h, const Vec<Scalar> &y, const ELL<Scalar> &A, const Vec<Scala
 
     static bool first = true;
     if (first) {
-        cusparseCreate(&h.h);
-        cusparseSetStream(h.h, Kokkos::DefaultExecutionSpace{}.cuda_stream());
-
         // create Y
         cusparseCreateDnVec(&h.y, y.extent(0), y.data(), make_cuda_data_type<Scalar>());
 
@@ -95,8 +106,8 @@ void spmv(Handle &h, const Vec<Scalar> &y, const ELL<Scalar> &A, const Vec<Scala
                                 h.x,
                                 &beta,
                                 h.y,
-                                make_cuda_data_type<Scalar>(),
-                                CUSPARSE_SPMV_SELL_ALG1,
+                                make_cuda_compute_type<Scalar>(),
+                                CUSPARSE_SPMV_ALG_DEFAULT,
                                 &bufferSize);
         if (status != CUSPARSE_STATUS_SUCCESS) {
             std::cerr << __FILE__ << ":" << __LINE__ << ": cusparse error: " << cusparseGetErrorString(status) << "\n";
@@ -117,12 +128,12 @@ void spmv(Handle &h, const Vec<Scalar> &y, const ELL<Scalar> &A, const Vec<Scala
     cusparseStatus_t status = cusparseSpMV(h.h,
              CUSPARSE_OPERATION_NON_TRANSPOSE,
              &alpha,
-             h.A,  // non-const descriptor supported
-             h.x,  // non-const descriptor supported
+             h.A,
+             h.x,
              &beta,
              h.y,
-             make_cuda_data_type<Scalar>(),
-             CUSPARSE_SPMV_SELL_ALG1,
+             make_cuda_compute_type<Scalar>(),
+             CUSPARSE_SPMV_ALG_DEFAULT,
              h.externalBuffer);
     if (status != CUSPARSE_STATUS_SUCCESS) {
         std::cerr << __FILE__ << ":" << __LINE__ << ": cusparse error: " << cusparseGetErrorString(status) << "\n";
@@ -150,6 +161,14 @@ Scalar dot(const Vec<Scalar> &x, const Vec<Scalar> &y) {
     return result;
 }
 
+template <typename Scalar>
+void dot_ondevice(const Kokkos::View<Scalar> &out, const Vec<Scalar> &x, const Vec<Scalar> &y) {
+    Kokkos::parallel_reduce("dot", x.extent(0), 
+        KOKKOS_LAMBDA(const int i, Scalar& lsum) {
+            lsum += x(i) * y(i);
+        }, out);
+}
+
 template <typename T>
 T sqrt(const T &t) {
     return std::sqrt(t);
@@ -170,32 +189,91 @@ T norm2(const Kokkos::View<T*> &r) {
     return sqrt(dot(r, r));
 }
 
+template<typename T>
+void norm2_ondevice(Kokkos::View<T> &out, const Kokkos::View<T*> &r) {
+    dot_ondevice(out, r, r);
+}
+
+template <typename T>
+std::ostream& operator<<(std::ostream& os, const Kokkos::View<T*> &v) {
+    constexpr size_t N = 30;  // Default display limit
+    size_t n = std::min(N, v.size());
+    auto s = Kokkos::subview(v, Kokkos::pair{size_t(0), size_t{n}});
+    auto h = Kokkos::create_mirror_view(s);
+    Kokkos::deep_copy(h, s);
+    os << "[ ";
+    for (size_t i = 0; i < n; ++i) {
+        if (0 == i) {
+            os << double(h(i));
+        } else {
+            os << ", " << double(h(i));
+        }
+    }
+    if (v.size() > n) {
+        os << " ...";
+    }
+    os << " ]";
+    return os;
+}
+
+struct Result {
+    int iters;
+    double error;
+    double spmv;
+    double reductions;
+    double total;
+};
+
 template <typename Scalar>
-std::pair<int, Scalar> cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scalar tol) {
+Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scalar tol, bool async = false) {
+
+    std::cout << "A.sellValues=" << A.sellValues << "\n";
+
+    Kokkos::DefaultExecutionSpace space;
 
     Handle handle;
+    cusparseCreate(&handle.h);
+    cusparseSetStream(handle.h, space.cuda_stream());
 
     Vec<Scalar> Ax0("Ax0", A.rows);
     Vec<Scalar> r_k("r", A.rows);
-
-    // r0 = b - A x0
-    spmv(handle, Ax0, A, x);
-    axpby(r_k, Scalar{-1}, Ax0, Scalar{1}, b);
-
-    Scalar r = norm2(r_k);
-    std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
-    if (r < tol) {
-        return std::make_pair(0, r);
-    }
-
-    Vec<Scalar> p_k("p_k", A.rows);
-    Kokkos::deep_copy(p_k, r_k); // p0 <- r0
-
-    Vec<Scalar> x_k = x;
     Vec<Scalar> Ap_k("Ap_k", A.rows);
     Vec<Scalar> r_k1("r_k1", A.rows);
+    Vec<Scalar> p_k("p_k", A.rows);
+
+    // sacrificial spmv
+    spmv(handle, Ax0, A, x);
+    Kokkos::fence();
+
+    auto start = Clock::now();
+    // r0 = b - A x0
+    spmv(handle, Ax0, A, x);
+    if (!async) {
+        std::cout << "Ax0=" << Ax0 << "\n";
+    }
+    axpby(r_k, Scalar{-1}, Ax0, Scalar{1}, b);
+    if (!async) {
+        std::cout << "r_0=" << r_k << "\n";
+    }
+
+    Scalar r = 0;
+    Kokkos::View<Scalar> error("error");
+    if (async) {
+        norm2_ondevice(error, r_k);
+    } else {
+        r = norm2(r_k);
+        std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
+        if (r < tol) {
+            return Result{0, double(r)};
+        }
+    }
+
+
+    Kokkos::deep_copy(space, p_k, r_k); // p0 <- r0
+
     int k = 1;
-    for (k = 1; k <= 1000; ++k) {
+    Vec<Scalar> x_k = x;
+    for (k = 1; k <= 100; ++k) {
         // std::cerr << __FILE__ << ":" << __LINE__ << " k=" << k << "\n";
 
         spmv(handle, Ap_k, A, p_k);
@@ -204,27 +282,37 @@ std::pair<int, Scalar> cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<S
         
         axpby(r_k1, Scalar{1}, r_k, -alpha_k, Ap_k);
 
-        r = norm2(r_k1);
-        std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
-        if (r < tol) {
-            return std::make_pair(k, r);
+        if (async) {
+            norm2_ondevice(error, r_k1);
+        } else {
+            r = norm2(r_k1);
+            std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
+            if (r < tol) {
+                double elapsed = Dur(Clock::now() - start).count();
+                return Result{k-1, double(r), 0, 0, elapsed};
+            }
         }
 
         Scalar beta_k = dot(r_k1, r_k1) / dot(r_k, r_k);
         // std::cerr << __FILE__ << ":" << __LINE__ << " beta_k=" << beta_k << "\n";
         axpby(p_k, Scalar{1}, r_k1, beta_k, p_k);
 
-
         axpby(x_k, Scalar{1}, x_k, alpha_k, p_k);
         std::swap(r_k1, r_k);
     }
 
-    return std::make_pair(k-1, r);
+    if (async) {
+        Kokkos::deep_copy(r, error);
+        r = sqrt(r);
+    } 
+
+    double elapsed = Dur(Clock::now() - start).count();
+    return Result{k-1, double(r), 0, 0, elapsed};
 }
 
 // cg solve on a region of nx x ny x nz
 template <typename Scalar>
-void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
+Result seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     /*
     for nx x ny x nz gridpoints, the matrix will be (nx*ny*nz) x (nx*ny*nz) with 7 nz in most rows
 
@@ -306,25 +394,27 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
             default: ;
         }
 
-        // std::cerr << "i=" << i 
-        //           << " row=" << row
-        //           << " col_i=" << col_i
-        //           << " edge=" << x << "," << y << "," << z << " -> ";
+#if 0
+        std::cerr << "i=" << i 
+                  << " row=" << row
+                  << " col_i=" << col_i
+                  << " edge=" << x << "," << y << "," << z << " -> ";
 
-        // switch(col_i) {
-        //     case 3: std::cerr << x << "," << y << "," << z  ; break;
-        //     case 0: std::cerr << x << "," << y << "," << z-1; break;
-        //     case 1: std::cerr << x << "," << y-1 << "," << z; break; 
-        //     case 2: std::cerr << x-1 << "," << y << "," << z; break; 
-        //     case 4: std::cerr << x+1 << "," << y << "," << z; break; 
-        //     case 5: std::cerr << x << "," << y+1 << "," << z; break; 
-        //     case 6: std::cerr << x << "," << y << "," << z+1; break; 
-        //     default: ;
-        // }
+        switch(col_i) {
+            case 3: std::cerr << x << "," << y << "," << z  ; break;
+            case 0: std::cerr << x << "," << y << "," << z-1; break;
+            case 1: std::cerr << x << "," << y-1 << "," << z; break; 
+            case 2: std::cerr << x-1 << "," << y << "," << z; break; 
+            case 4: std::cerr << x+1 << "," << y << "," << z; break; 
+            case 5: std::cerr << x << "," << y+1 << "," << z; break; 
+            case 6: std::cerr << x << "," << y << "," << z+1; break; 
+            default: ;
+        }
 
-        // std::cerr << " sellColInd_h(i)=" << sellColInd_h(i)
-        //           << " sellValues_h(i)=" << sellValues_h(i)
-        //           << "\n";
+        std::cerr << " sellColInd_h(i)=" << sellColInd_h(i)
+                  << " sellValues_h(i)=" << double(sellValues_h(i))
+                  << "\n";
+#endif
     }
 
     std::cerr << __FILE__ << ":" << __LINE__ << " sellValues <- sellValues_h\n"; 
@@ -351,18 +441,23 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " b <- b_h\n"; 
     Kokkos::deep_copy(b, b_h);
 
+    std::cout << "b=" << b << "\n";
+
     ELL<Scalar> A{
         rows, cols, nnz, sellValuesSize, sliceSize, sellSliceOffsets, sellColInd, sellValues
     };
 
     std::cerr << __FILE__ << ":" << __LINE__ << " cg\n"; 
-    const auto p = cg(b, A, x, tol);
-
-    std::cerr << __FILE__ << ":" << __LINE__ << " cg terminated with k=" << p.first << " r=" << double(p.second) << "\n";
+    return cg(b, A, x, tol);
 }
 
 
 
+void summarize(const Result &r) {
+    std::cout << "cg terminated with k=" << r.iters << " r=" << r.error << std::endl;
+    std::cout << "  total:      " << r.total << std::endl;
+    std::cout << "  total/iter: " << r.total / r.iters << std::endl;
+}
 
 
 int main(int argc, char** argv) {
@@ -385,13 +480,16 @@ int main(int argc, char** argv) {
     }
 
     int err = 0;
+
     Kokkos::initialize(); {
         if (dt == "f32") {
-            seven_point<float>(nx,ny,nz, 1e-7);
+            summarize(seven_point<float>(nx,ny,nz, 1e-7));
         } else if (dt == "f64") {
-            seven_point<double>(nx,ny,nz, 1e-13);
+            summarize(seven_point<double>(nx,ny,nz, 1e-13));
         } else if (dt == "bf16") {
-            seven_point<__nv_bfloat16>(nx,ny,nz, 1e-3);
+            summarize(seven_point<__nv_bfloat16>(nx,ny,nz, 1e-3));
+        }else if (dt == "f16") {
+            summarize(seven_point<Kokkos::Experimental::half_t>(nx,ny,nz, 1e-4));
         } else {
             std::cerr << "unexpected data type " << dt << "\n";
             err = 1;
