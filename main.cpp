@@ -143,8 +143,24 @@ float dot(const Vec &x, const Vec &y) {
     return result;
 }
 
-float norm2(const Vec &r) {
-    return std::sqrt(dot(r, r));
+template <typename T>
+T sqrt(const T &t) {
+    return std::sqrt(t);
+}
+
+template<>
+__nv_bfloat16 sqrt(const __nv_bfloat16 &t) {
+    return __nv_bfloat16(sqrt(float(t)));
+}
+
+template<>
+Kokkos::Experimental::half_t sqrt(const Kokkos::Experimental::half_t &t) {
+    return Kokkos::sqrt(t);
+}
+
+template<typename T>
+float norm2(const Kokkos::View<T*> &r) {
+    return sqrt(dot(r, r));
 }
 
 std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
