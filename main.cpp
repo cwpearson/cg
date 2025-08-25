@@ -5,7 +5,8 @@
 
 #include <cusparse_v2.h>
 
-using Vec = Kokkos::View<float*>;
+template <typename Scalar>
+using Vec = Kokkos::View<Scalar *>;
 
 template <typename Scalar>
 struct ELL {
@@ -15,9 +16,9 @@ struct ELL {
     int64_t sellValuesSize;
     int64_t sliceSize;
 
-    Kokkos::View<int32_t*> sellSliceOffsets;
-    Kokkos::View<int32_t*> sellColInd;
-    Kokkos::View<Scalar *> sellValues;
+    Vec<int32_t> sellSliceOffsets;
+    Vec<int32_t> sellColInd;
+    Vec<Scalar> sellValues;
 
 
 };
@@ -48,7 +49,7 @@ constexpr cudaDataType_t make_cuda_data_type() {
 }
 
 template <typename Scalar>
-void spmv(Handle &h, const Kokkos::View<Scalar*> &y, const ELL<Scalar> &A, const Kokkos::View<Scalar*> &x) {
+void spmv(Handle &h, const Vec<Scalar> &y, const ELL<Scalar> &A, const Vec<Scalar> &x) {
 
     Scalar alpha = 1;
     Scalar beta = 0;
@@ -130,7 +131,7 @@ void spmv(Handle &h, const Kokkos::View<Scalar*> &y, const ELL<Scalar> &A, const
 
 
 template <typename Scalar>
-void axpby(const Kokkos::View<Scalar*> &z, Scalar alpha, const Kokkos::View<Scalar*> &x, Scalar beta, const Kokkos::View<Scalar*> &y) {
+void axpby(const Vec<Scalar> &z, Scalar alpha, const Vec<Scalar> &x, Scalar beta, const Vec<Scalar> &y) {
     Kokkos::parallel_for("axpby", z.extent(0), 
         KOKKOS_LAMBDA(const int i) {
             z(i) = alpha * x(i) + beta * y(i);
@@ -138,7 +139,7 @@ void axpby(const Kokkos::View<Scalar*> &z, Scalar alpha, const Kokkos::View<Scal
 }
 
 template <typename Scalar>
-Scalar dot(const Kokkos::View<Scalar*> &x, const Kokkos::View<Scalar*> &y) {
+Scalar dot(const Vec<Scalar> &x, const Vec<Scalar> &y) {
     Scalar result = 0.0;
     Kokkos::parallel_reduce("dot", x.extent(0), 
         KOKKOS_LAMBDA(const int i, Scalar& lsum) {
@@ -167,12 +168,12 @@ float norm2(const Kokkos::View<T*> &r) {
     return sqrt(dot(r, r));
 }
 
-std::pair<int, float> cg(const Vec& x, const ELL<float> A, const Vec& b, float tol) {
+std::pair<int, float> cg(const Vec<float>& x, const ELL<float> A, const Vec<float>& b, float tol) {
 
     Handle handle;
 
-    Vec Ax0("Ax0", A.rows);
-    Vec r_k("r", A.rows);
+    Vec<float> Ax0("Ax0", A.rows);
+    Vec<float> r_k("r", A.rows);
 
     // r0 = b - A x0
     spmv(handle, Ax0, A, x);
@@ -184,12 +185,12 @@ std::pair<int, float> cg(const Vec& x, const ELL<float> A, const Vec& b, float t
         return std::make_pair(0, r);
     }
 
-    Vec p_k("p_k", A.rows);
+    Vec<float> p_k("p_k", A.rows);
     Kokkos::deep_copy(p_k, r_k); // p0 <- r0
 
-    Vec x_k = x;
-    Vec Ap_k("Ap_k", A.rows);
-    Vec r_k1("r_k1", A.rows);
+    Vec<float> x_k = x;
+    Vec<float> Ap_k("Ap_k", A.rows);
+    Vec<float> r_k1("r_k1", A.rows);
     int k = 1;
     for (k = 1; k <= 1000; ++k) {
         // std::cerr << __FILE__ << ":" << __LINE__ << " k=" << k << "\n";
@@ -264,9 +265,9 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " nnz=" << nnz << "\n";
 
     std::cerr << __FILE__ << ":" << __LINE__ << " create SELL device views\n";
-    Vec sellValues("sellValues", sellValuesSize);
-    Kokkos::View<int32_t*> sellColInd("sellColInd", sellValuesSize);
-    Kokkos::View<int32_t*> sellSliceOffsets("sellSliceOffsets", 1+1); // 1 slice
+    Vec<float> sellValues("sellValues", sellValuesSize);
+    Vec<int32_t> sellColInd("sellColInd", sellValuesSize);
+    Vec<int32_t> sellSliceOffsets("sellSliceOffsets", 1+1); // 1 slice
 
     std::cerr << __FILE__ << ":" << __LINE__ << " create SELL mirror views\n";
     auto sellValues_h = Kokkos::create_mirror_view(sellValues);
@@ -330,8 +331,8 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " sellSliceOffsets <- sellSliceOffsets_h\n"; 
     Kokkos::deep_copy(sellSliceOffsets, sellSliceOffsets_h);
 
-    Kokkos::View<float *> b("b", cols);
-    Kokkos::View<float *> x("x", rows);
+    Vec<float> b("b", cols);
+    Vec<float> x("x", rows);
 
     std::cerr << __FILE__ << ":" << __LINE__ << " b_h = create_mirror_view(b)\n"; 
     auto b_h = Kokkos::create_mirror_view(b);
