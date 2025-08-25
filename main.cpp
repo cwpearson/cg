@@ -7,6 +7,7 @@
 
 using Vec = Kokkos::View<float*>;
 
+template <typename Scalar>
 struct ELL {
     int64_t rows;
     int64_t cols;
@@ -16,7 +17,7 @@ struct ELL {
 
     Kokkos::View<int32_t*> sellSliceOffsets;
     Kokkos::View<int32_t*> sellColInd;
-    Vec sellValues;
+    Kokkos::View<Scalar *> sellValues;
 
 
 };
@@ -46,10 +47,11 @@ constexpr cudaDataType_t make_cuda_data_type() {
     }
 }
 
-void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
+template <typename Scalar>
+void spmv(Handle &h, const Kokkos::View<Scalar*> &y, const ELL<Scalar> &A, const Kokkos::View<Scalar*> &x) {
 
-    constexpr float alpha = 1;
-    constexpr float beta = 0;
+    Scalar alpha = 1;
+    Scalar beta = 0;
 
     static bool first = true;
     if (first) {
@@ -57,16 +59,16 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
         cusparseSetStream(h.h, Kokkos::DefaultExecutionSpace{}.cuda_stream());
 
         // create Y
-        cusparseCreateDnVec(&h.y, y.extent(0), y.data(), make_cuda_data_type<float>());
+        cusparseCreateDnVec(&h.y, y.extent(0), y.data(), make_cuda_data_type<Scalar>());
 
         // create X
-        cusparseCreateDnVec(&h.x, x.extent(0), x.data(), make_cuda_data_type<float>());
+        cusparseCreateDnVec(&h.x, x.extent(0), x.data(), make_cuda_data_type<Scalar>());
 
         // create A
         cusparseIndexType_t sellSliceOffsetsType = CUSPARSE_INDEX_32I;
         cusparseIndexType_t sellColIndType = CUSPARSE_INDEX_32I;
         cusparseIndexBase_t idxBase = CUSPARSE_INDEX_BASE_ZERO;
-        cudaDataType valueType = make_cuda_data_type<float>();
+        cudaDataType valueType = make_cuda_data_type<Scalar>();
         cusparseStatus_t status = cusparseCreateConstSlicedEll(&h.A, A.rows, A.cols, A.nnz,
                              A.sellValuesSize,
                              A.sliceSize,
@@ -90,7 +92,7 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
                                 h.x,
                                 &beta,
                                 h.y,
-                                make_cuda_data_type<float>(),
+                                make_cuda_data_type<Scalar>(),
                                 CUSPARSE_SPMV_SELL_ALG1,
                                 &bufferSize);
         if (status != CUSPARSE_STATUS_SUCCESS) {
@@ -116,7 +118,7 @@ void spmv(Handle &h, const Vec &y, const ELL &A, const Vec &x) {
              h.x,  // non-const descriptor supported
              &beta,
              h.y,
-             make_cuda_data_type<float>(),
+             make_cuda_data_type<Scalar>(),
              CUSPARSE_SPMV_SELL_ALG1,
              h.externalBuffer);
     if (status != CUSPARSE_STATUS_SUCCESS) {
@@ -165,7 +167,7 @@ float norm2(const Kokkos::View<T*> &r) {
     return sqrt(dot(r, r));
 }
 
-std::pair<int, float> cg(const Vec& x, const ELL A, const Vec& b, float tol) {
+std::pair<int, float> cg(const Vec& x, const ELL<float> A, const Vec& b, float tol) {
 
     Handle handle;
 
@@ -345,7 +347,7 @@ void seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
     std::cerr << __FILE__ << ":" << __LINE__ << " b <- b_h\n"; 
     Kokkos::deep_copy(b, b_h);
 
-    ELL A{
+    ELL<float> A{
         rows, cols, nnz, sellValuesSize, sliceSize, sellSliceOffsets, sellColInd, sellValues
     };
 
