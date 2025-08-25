@@ -164,7 +164,7 @@ Kokkos::Experimental::half_t sqrt(const Kokkos::Experimental::half_t &t) {
 }
 
 template<typename T>
-float norm2(const Kokkos::View<T*> &r) {
+T norm2(const Kokkos::View<T*> &r) {
     return sqrt(dot(r, r));
 }
 
