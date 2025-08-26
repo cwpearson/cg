@@ -6,9 +6,15 @@
 
 #include <cusparse_v2.h>
 
+#define CG_SUBTIMERS
+
 using Clock = std::chrono::steady_clock;
 using Dur = std::chrono::duration<double>;
 
+static double spmvElapsed = 0;
+static double dotElapsed = 0;
+static double axpbyElapsed = 0;
+static double norm2Elapsed = 0;
 
 template <typename Scalar>
 using Vec = Kokkos::View<Scalar *>;
@@ -39,6 +45,48 @@ struct Handle {
         cusparseDestroy(h);
     }
 };
+
+#ifdef CG_SUBTIMERS
+struct CudaTimer {
+    cudaEvent_t start_event;
+    cudaEvent_t stop_event;
+    double& elapsed_time_accumulator;
+
+    // Constructor: creates events and records start
+    CudaTimer(double& output_time) : elapsed_time_accumulator(output_time) {
+        cudaEventCreate(&start_event);
+        cudaEventCreate(&stop_event);
+        cudaEventRecord(start_event);
+    }
+
+    // Destructor: records stop, syncs, computes elapsed time and accumulates
+    ~CudaTimer() {
+        cudaEventRecord(stop_event);
+        cudaEventSynchronize(stop_event);
+
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start_event, stop_event);
+
+        // Accumulate the elapsed time (converting ms to seconds if needed)
+        elapsed_time_accumulator += double(milliseconds) / 1000;
+
+        // Clean up events
+        cudaEventDestroy(start_event);
+        cudaEventDestroy(stop_event);
+    }
+
+    // Delete copy constructor and assignment operator to prevent issues
+    CudaTimer(const CudaTimer&) = delete;
+    CudaTimer& operator=(const CudaTimer&) = delete;
+};
+#else
+struct CudaTimer {
+    CudaTimer(double&) {}
+    ~CudaTimer() {}
+    CudaTimer(const CudaTimer&) = delete;
+    CudaTimer& operator=(const CudaTimer&) = delete;
+};
+#endif
 
 template <typename T>
 constexpr cudaDataType_t make_cuda_data_type() {
@@ -125,26 +173,30 @@ void spmv(Handle &h, const Vec<Scalar> &y, const ELL<Scalar> &A, const Vec<Scala
     cusparseDnVecSetValues(h.x, x.data());
     cusparseDnVecSetValues(h.y, y.data());
 
-    cusparseStatus_t status = cusparseSpMV(h.h,
-             CUSPARSE_OPERATION_NON_TRANSPOSE,
-             &alpha,
-             h.A,
-             h.x,
-             &beta,
-             h.y,
-             make_cuda_compute_type<Scalar>(),
-             CUSPARSE_SPMV_ALG_DEFAULT,
-             h.externalBuffer);
-    if (status != CUSPARSE_STATUS_SUCCESS) {
-        std::cerr << __FILE__ << ":" << __LINE__ << ": cusparse error: " << cusparseGetErrorString(status) << "\n";
-    }
 
+    {
+        CudaTimer ct(spmvElapsed);
+        cusparseStatus_t status = cusparseSpMV(h.h,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &alpha,
+                h.A,
+                h.x,
+                &beta,
+                h.y,
+                make_cuda_compute_type<Scalar>(),
+                CUSPARSE_SPMV_ALG_DEFAULT,
+                h.externalBuffer);
+        if (status != CUSPARSE_STATUS_SUCCESS) {
+            std::cerr << __FILE__ << ":" << __LINE__ << ": cusparse error: " << cusparseGetErrorString(status) << "\n";
+        }
+    }
 };
 
 
 
 template <typename Scalar>
 void axpby(const Vec<Scalar> &z, Scalar alpha, const Vec<Scalar> &x, Scalar beta, const Vec<Scalar> &y) {
+    CudaTimer ct(axpbyElapsed);
     Kokkos::parallel_for("axpby", z.extent(0), 
         KOKKOS_LAMBDA(const int i) {
             z(i) = alpha * x(i) + beta * y(i);
@@ -153,6 +205,7 @@ void axpby(const Vec<Scalar> &z, Scalar alpha, const Vec<Scalar> &x, Scalar beta
 
 template <typename Scalar>
 Scalar dot(const Vec<Scalar> &x, const Vec<Scalar> &y) {
+    CudaTimer ct(dotElapsed);
     Scalar result = 0.0;
     Kokkos::parallel_reduce("dot", x.extent(0), 
         KOKKOS_LAMBDA(const int i, Scalar& lsum) {
@@ -163,6 +216,7 @@ Scalar dot(const Vec<Scalar> &x, const Vec<Scalar> &y) {
 
 template <typename Scalar>
 void dot_ondevice(const Kokkos::View<Scalar> &out, const Vec<Scalar> &x, const Vec<Scalar> &y) {
+    CudaTimer ct(dotElapsed);
     Kokkos::parallel_reduce("dot", x.extent(0), 
         KOKKOS_LAMBDA(const int i, Scalar& lsum) {
             lsum += x(i) * y(i);
@@ -186,11 +240,13 @@ Kokkos::Experimental::half_t sqrt(const Kokkos::Experimental::half_t &t) {
 
 template<typename T>
 T norm2(const Kokkos::View<T*> &r) {
+    CudaTimer ct(norm2Elapsed);
     return sqrt(dot(r, r));
 }
 
 template<typename T>
 void norm2_ondevice(Kokkos::View<T> &out, const Kokkos::View<T*> &r) {
+    CudaTimer ct(norm2Elapsed);
     dot_ondevice(out, r, r);
 }
 
@@ -219,13 +275,12 @@ std::ostream& operator<<(std::ostream& os, const Kokkos::View<T*> &v) {
 struct Result {
     int iters;
     double error;
-    double spmv;
-    double reductions;
     double total;
 };
 
 template <typename Scalar>
-Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scalar tol, bool async = false) {
+Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scalar tol, bool async = true) {
+    Result result{};
 
     std::cout << "A.sellValues=" << A.sellValues << "\n";
 
@@ -264,7 +319,8 @@ Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scala
         r = norm2(r_k);
         std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
         if (r < tol) {
-            return Result{0, double(r)};
+            result.error = double(r);
+            return result;
         }
     }
 
@@ -273,10 +329,12 @@ Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scala
 
     int k = 1;
     Vec<Scalar> x_k = x;
+
     for (k = 1; k <= 100; ++k) {
         // std::cerr << __FILE__ << ":" << __LINE__ << " k=" << k << "\n";
 
         spmv(handle, Ap_k, A, p_k);
+        result.iters++;
         Scalar alpha_k = dot(r_k,r_k) / dot(p_k, Ap_k);
         // std::cerr << __FILE__ << ":" << __LINE__ << " alpha_k=" << alpha_k << "\n";
         
@@ -289,7 +347,9 @@ Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scala
             std::cerr << __FILE__ << ":" << __LINE__ << " r=" << double(r) << "\n";
             if (r < tol) {
                 double elapsed = Dur(Clock::now() - start).count();
-                return Result{k-1, double(r), 0, 0, elapsed};
+                result.total = elapsed;
+                result.error = double(r);
+                return result;
             }
         }
 
@@ -307,7 +367,9 @@ Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scala
     } 
 
     double elapsed = Dur(Clock::now() - start).count();
-    return Result{k-1, double(r), 0, 0, elapsed};
+    result.error = double(r);
+    result.total = elapsed;
+    return result;
 }
 
 // cg solve on a region of nx x ny x nz
@@ -455,8 +517,16 @@ Result seven_point(int64_t nx, int64_t ny, int64_t nz, Scalar tol) {
 
 void summarize(const Result &r) {
     std::cout << "cg terminated with k=" << r.iters << " r=" << r.error << std::endl;
-    std::cout << "  total:      " << r.total << std::endl;
-    std::cout << "  total/iter: " << r.total / r.iters << std::endl;
+    std::cout << "  total:        " << r.total << std::endl;
+    std::cout << "  iters:        " << r.iters << std::endl;
+    std::cout << "  total/iter:   " << r.total / r.iters << std::endl;
+    std::cout << "  spmv:         " << spmvElapsed << std::endl;
+    std::cout << "  dot:          " << dotElapsed << std::endl;
+#ifdef CG_SUBTIMERS
+    std::cout << "  CG_SUBTIMERS: DEFINED" << std::endl;
+#else
+    std::cout << "  CG_SUBTIMERS: UNDEFINED" << std::endl;
+#endif
 }
 
 
