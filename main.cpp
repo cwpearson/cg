@@ -522,6 +522,7 @@ void summarize(const Result &r) {
     std::cout << "  total/iter:   " << r.total / r.iters << std::endl;
     std::cout << "  spmv:         " << spmvElapsed << std::endl;
     std::cout << "  dot:          " << dotElapsed << std::endl;
+    std::cout << "  axpby:        " << axpbyElapsed << std::endl;
 #ifdef CG_SUBTIMERS
     std::cout << "  CG_SUBTIMERS: DEFINED" << std::endl;
 #else
