@@ -296,10 +296,6 @@ Result cg(const Vec<Scalar>& x, const ELL<Scalar> A, const Vec<Scalar>& b, Scala
     Vec<Scalar> r_k1("r_k1", A.rows);
     Vec<Scalar> p_k("p_k", A.rows);
 
-    // sacrificial spmv
-    spmv(handle, Ax0, A, x);
-    Kokkos::fence();
-
     auto start = Clock::now();
     // r0 = b - A x0
     spmv(handle, Ax0, A, x);
@@ -539,13 +535,13 @@ int main(int argc, char** argv) {
     int nz = 10;
     if (argc >= 5) {
         nx = std::atoi(argv[1]);
-        nx = std::atoi(argv[2]);
-        nx = std::atoi(argv[3]);
+        ny = std::atoi(argv[2]);
+        nz = std::atoi(argv[3]);
         dt = argv[4];
     } else if (argc >= 4) {
         nx = std::atoi(argv[1]);
-        nx = std::atoi(argv[2]);
-        nx = std::atoi(argv[3]);
+        ny = std::atoi(argv[2]);
+        nz = std::atoi(argv[3]);
     } else if (argc >= 2) {
         nx = ny = nz = std::atoi(argv[1]);
     }
